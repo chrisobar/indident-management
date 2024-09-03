@@ -1,0 +1,157 @@
+_schema-version: 3.3.0
+ID: indident-management
+description: A simple CAP project.
+version: 1.0.0
+modules:
+  - name: indident-management-srv
+    type: nodejs
+    path: gen/srv
+    requires:
+      - name: indident-management-db
+      - name: indident-management-auth
+      - name: indident-management-destination-service
+    provides:
+      - name: srv-api
+        properties:
+          srv-url: ${default-url}
+    parameters:
+      buildpack: nodejs_buildpack
+      readiness-health-check-http-endpoint: /health
+      readiness-health-check-type: http
+    build-parameters:
+      builder: npm
+  - name: indident-management-db-deployer
+    type: hdb
+    path: gen/db
+    requires:
+      - name: indident-management-db
+    parameters:
+      buildpack: nodejs_buildpack
+  - name: indident-management-destination-content
+    type: com.sap.application.content
+    requires:
+      - name: indident-management-destination-service
+        parameters:
+          content-target: true
+      - name: indident-management_html_repo_host
+        parameters:
+          service-key:
+            name: indident-management_html_repo_host-key
+      - name: indident-management-auth
+        parameters:
+          service-key:
+            name: indident-management-auth-key
+    parameters:
+      content:
+        instance:
+          destinations:
+            - Name: incidents_indident_management_html_repo_host
+              ServiceInstanceName: indident-management-html5-app-host-service
+              ServiceKeyName: indident-management_html_repo_host-key
+              sap.cloud.service: incidents
+            - Authentication: OAuth2UserTokenExchange
+              Name: incidents_indident_management_auth
+              ServiceInstanceName: indident-management-auth
+              ServiceKeyName: indident-management-auth-key
+              sap.cloud.service: incidents
+          existing_destinations_policy: ignore
+    build-parameters:
+      no-source: true
+  - name: indident-management-app-content
+    type: com.sap.application.content
+    path: .
+    requires:
+      - name: indident-management_html_repo_host
+        parameters:
+          content-target: true
+    build-parameters:
+      build-result: resources
+      requires:
+        - artifacts:
+            - ns01incidents.zip
+          name: ns01incidents
+          target-path: resources/
+  - name: ns01incidents
+    type: html5
+    path: app/incidents
+    build-parameters:
+      build-result: dist
+      builder: custom
+      commands:
+        - npm install
+        - npm run build:cf
+      supported-platforms:
+        []
+
+  - name: indident-management
+    type: approuter.nodejs
+    path: app/router
+    parameters:
+      keep-existing-routes: true
+      disk-quota: 256M
+      memory: 256M
+    requires:
+      - name: srv-api
+        group: destinations
+        properties:
+          name: srv-api # must be used in xs-app.json as well
+          url: ~{srv-url}
+          forwardAuthToken: true
+      - name: indident-management-auth
+resources:
+  - name: indident-management-db
+    type: com.sap.xs.hdi-container
+    parameters:
+      service: hana
+      service-plan: hdi-shared
+  - name: indident-management-auth
+    type: org.cloudfoundry.managed-service
+    parameters:
+      config:
+        tenant-mode: dedicated
+        xsappname: indident-management-${org}-${space}
+      path: ./xs-security.json
+      service: xsuaa
+      service-plan: application
+  - name: indident-management-destination-service
+    type: org.cloudfoundry.managed-service
+    parameters:
+      config:
+        HTML5Runtime_enabled: true
+        init_data:
+          instance:
+            destinations:
+              - Authentication: NoAuthentication
+                Name: ui5
+                ProxyType: Internet
+                Type: HTTP
+                URL: https://ui5.sap.com
+              - Authentication: NoAuthentication
+                HTML5.DynamicDestination: true
+                HTML5.ForwardAuthToken: true
+                Name: indident-management-srv-api
+                ProxyType: Internet
+                Type: HTTP
+                URL: ~{srv-api/srv-url}
+            existing_destinations_policy: update
+        version: 1.0.0
+      service: destination
+      service-name: indident-management-destination-service
+      service-plan: lite
+    requires:
+      - name: srv-api
+  - name: indident-management_html_repo_host
+    type: org.cloudfoundry.managed-service
+    parameters:
+      service: html5-apps-repo
+      service-name: indident-management-html5-app-host-service
+      service-plan: app-host
+parameters:
+  deploy_mode: html5-repo
+  enable-parallel-deployments: true
+build-parameters:
+  before-all:
+    - builder: custom
+      commands:
+        - npm ci
+        - npx cds build --production
